@@ -26,6 +26,10 @@ class AttendanceStub extends AquarService {
   Completer<List<Attendance>>? historyGate;
   Completer<Attendance>? actionGate;
   int checkIns = 0, checkOuts = 0, reads = 0;
+  AttendanceLocationPolicy policy =
+      const AttendanceLocationPolicy(configured: false, required: false);
+  @override
+  Future<AttendanceLocationPolicy> attendanceLocationPolicy() async => policy;
   GpsCoordinates? lastCheckInLocation, lastCheckOutLocation;
   @override
   Future<List<Attendance>> myAttendance() async {

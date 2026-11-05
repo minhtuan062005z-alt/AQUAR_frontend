@@ -58,9 +58,15 @@ class AttendanceLocationInfo {
       {this.latitude,
       this.longitude,
       this.distanceMeters,
+      this.radiusMeters,
+      this.accuracy,
+      this.verificationStatus,
+      this.method,
       required this.status,
       this.verificationReason});
   final double? latitude, longitude, distanceMeters;
+  final double? radiusMeters, accuracy;
+  final String? verificationStatus, method;
   final String status;
   final String? verificationReason;
   bool get hasCoordinates =>
@@ -70,17 +76,54 @@ class AttendanceLocationInfo {
       latitude! <= 90 &&
       longitude! >= -180 &&
       longitude! <= 180;
-  bool get isVerified =>
-      hasCoordinates &&
-      verificationReason != 'CompanyNotConfigured' &&
-      (status == 'InRange' || status == 'OutOfRange');
-  bool get isOutside => isVerified && status == 'OutOfRange';
-  String get statusLabel => !isVerified
-      ? 'Chưa xác minh vị trí'
-      : isOutside
-          ? 'Ngoài phạm vi công ty'
-          : 'Trong phạm vi công ty';
-  double? get displayedDistance => isVerified ? distanceMeters : null;
+  String get result =>
+      verificationStatus ??
+      (verificationReason == 'CompanyNotConfigured'
+          ? 'NOT_CONFIGURED'
+          : !hasCoordinates
+              ? 'NOT_VERIFIED'
+              : switch (status) {
+                  'InRange' || 'VERIFIED' => 'VERIFIED',
+                  'OutOfRange' || 'OUT_OF_RANGE' => 'OUT_OF_RANGE',
+                  'LOW_ACCURACY' ||
+                  'GPS_UNAVAILABLE' ||
+                  'NOT_CONFIGURED' =>
+                    status,
+                  _ => 'NOT_VERIFIED'
+                });
+  bool get isVerified => result == 'VERIFIED' || result == 'OUT_OF_RANGE';
+  bool get isOutside => result == 'OUT_OF_RANGE';
+  String get statusLabel => switch (result) {
+        'VERIFIED' => 'Trong phạm vi công ty',
+        'OUT_OF_RANGE' => 'Ngoài phạm vi công ty',
+        'LOW_ACCURACY' => 'GPS không đủ độ chính xác',
+        'GPS_UNAVAILABLE' => 'Không lấy được GPS',
+        _ => 'Chưa xác minh vị trí',
+      };
+  String get reasonLabel => switch (verificationReason) {
+        'CompanyNotConfigured' => 'Công ty chưa cấu hình vị trí chấm công.',
+        'NoGps' => 'Không có GPS tại thời điểm chấm công.',
+        'MissingAccuracy' => 'Thiết bị chưa gửi độ chính xác GPS.',
+        'MissingCaptureTime' => 'Chưa có thời điểm lấy GPS.',
+        'StaleOrFuturePosition' => 'Vị trí quá cũ hoặc sai thời gian.',
+        'AccuracyAboveLimit' => 'Độ chính xác GPS vượt giới hạn công ty.',
+        'AccuracyOverlapsBoundary' =>
+          'Vùng sai số GPS giao với ranh giới công ty.',
+        'OutsideCompanyRadius' => 'Khoảng cách vượt bán kính cho phép.',
+        'ClientCoordinatesCompared' =>
+          'Backend đã tính khoảng cách theo cấu hình lúc chấm công.',
+        _ => result == 'NOT_CONFIGURED'
+            ? 'Công ty chưa cấu hình vị trí chấm công.'
+            : result == 'NOT_VERIFIED'
+                ? 'Bản ghi cũ hoặc chưa có kết quả xác minh.'
+                : '',
+      };
+  double? get displayedDistance => hasCoordinates &&
+          (isVerified ||
+              verificationStatus != null &&
+                  (result == 'LOW_ACCURACY' || result == 'NOT_VERIFIED'))
+      ? distanceMeters
+      : null;
   static AttendanceLocationInfo? fromJson(Object? value) {
     if (value is! Map) return null;
     double? number(Object? raw) =>
@@ -90,6 +133,10 @@ class AttendanceLocationInfo {
         latitude: number(value['latitude']),
         longitude: number(value['longitude']),
         distanceMeters: distance != null && distance >= 0 ? distance : null,
+        radiusMeters: number(value['radiusMeters']),
+        accuracy: number(value['accuracy']),
+        verificationStatus: value['verificationStatus'] as String?,
+        method: value['method'] as String?,
         status: value['status'] is String
             ? value['status'] as String
             : 'Unverified',

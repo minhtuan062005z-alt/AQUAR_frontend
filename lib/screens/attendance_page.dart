@@ -6,14 +6,20 @@ import '../models/attendance.dart';
 import '../models/user.dart';
 import '../services/aquar_service.dart';
 import '../services/attendance_location.dart';
+import '../services/attendance_biometrics.dart';
 import '../widgets/common.dart';
 
 class AttendancePage extends StatefulWidget {
   const AttendancePage(
-      {super.key, required this.user, this.service, this.locationProvider});
+      {super.key,
+      required this.user,
+      this.service,
+      this.locationProvider,
+      this.biometrics});
   final AquarUser user;
   final AquarService? service;
   final AttendanceLocationProvider? locationProvider;
+  final AttendanceBiometrics? biometrics;
   @override
   State<AttendancePage> createState() => _AttendancePageState();
 }
@@ -22,6 +28,8 @@ class _AttendancePageState extends State<AttendancePage> {
   late final service = widget.service ?? AquarService();
   late final locationProvider =
       widget.locationProvider ?? GeolocatorAttendanceLocation();
+  late final biometrics = widget.biometrics ?? SystemAttendanceBiometrics();
+  BiometricCapability? biometricCapability;
   List<Attendance> rows = [];
   bool loading = true, busy = false, synchronized = false;
   String? loadError, actionError, locationNotice;
@@ -31,6 +39,18 @@ class _AttendancePageState extends State<AttendancePage> {
   void initState() {
     super.initState();
     load();
+    checkBiometrics();
+  }
+
+  Future<void> checkBiometrics() async {
+    final value = await biometrics.capability();
+    if (mounted) setState(() => biometricCapability = value);
+  }
+
+  @override
+  void dispose() {
+    biometrics.cancel();
+    super.dispose();
   }
 
   Attendance? get current {
@@ -78,7 +98,8 @@ class _AttendancePageState extends State<AttendancePage> {
     await load();
   }
 
-  Future<void> submit(bool checkIn) async {
+  Future<void> submit(bool checkIn, {bool biometric = false}) async {
+    var postStarted = false;
     if (busy || loading || !synchronized) return;
     if (checkIn == (current?.isOpen == true)) return;
     setState(() {
@@ -87,20 +108,44 @@ class _AttendancePageState extends State<AttendancePage> {
       locationNotice = null;
     });
     try {
+      if (biometric && !await biometrics.authenticate()) {
+        if (mounted)
+          setState(() => actionError =
+              'Xác thực bị hủy, thất bại hoặc không khả dụng. Chưa gửi yêu cầu chấm công.');
+        return;
+      }
+      if (!mounted || service.api.authEvent.value != null) return;
+      final policy = await service.attendanceLocationPolicy();
+      if (!mounted || service.api.authEvent.value != null) return;
+      setState(() => locationNotice = 'Đang lấy GPS mới, vui lòng chờ...');
       LocationCapture capture;
       try {
         capture = await locationProvider.captureOnce();
       } catch (_) {
         capture = const LocationCapture.unavailable(
-            'Không lấy được GPS. Vẫn chấm công, vị trí chưa xác minh.');
+            'Không lấy được GPS; vị trí chưa xác minh.');
       }
       // Do not submit after navigation/logout while a permission dialog was open.
       if (!mounted || service.api.authEvent.value != null) return;
+      if (!policy.permitsSubmission(capture.coordinates)) {
+        setState(() {
+          locationNotice = capture.message;
+          actionError = !policy.configured
+              ? 'Công ty chưa cấu hình vị trí chấm công.'
+              : 'Công ty yêu cầu GPS hợp lệ, mới và đủ chính xác. Chưa gửi yêu cầu chấm công.';
+        });
+        return;
+      }
       setState(() => locationNotice = capture.message ??
           'Đã lấy vị trí; Backend xác định trạng thái xác minh.');
-      final record = checkIn
-          ? await service.checkIn(location: capture.coordinates)
-          : await service.checkOut(location: capture.coordinates);
+      postStarted = true;
+      final record = biometric
+          ? (checkIn
+              ? await service.biometricCheckIn(location: capture.coordinates)
+              : await service.biometricCheckOut(location: capture.coordinates))
+          : checkIn
+              ? await service.checkIn(location: capture.coordinates)
+              : await service.checkOut(location: capture.coordinates);
       if (record.staffId != widget.user.id) {
         throw const FormatException('Bản ghi không thuộc tài khoản hiện tại.');
       }
@@ -116,14 +161,23 @@ class _AttendancePageState extends State<AttendancePage> {
     } catch (e) {
       if (!mounted) return;
       var message = errorText(e);
+      if (e is DioException &&
+          e.response?.statusCode == 422 &&
+          e.response?.data is Map) {
+        final gps = AttendanceLocationInfo.fromJson(
+            (e.response!.data as Map)['verification']);
+        if (gps != null)
+          message = '$message ${gps.statusLabel}. ${gps.reasonLabel}';
+      }
       if (e is DioException && e.response?.statusCode == 409) {
         final data = e.response?.data;
         message = data is Map && data['message'] is String
             ? data['message'] as String
             : 'Ca làm vừa thay đổi. Đang tải lại trạng thái.';
       } else if (e is DioException && e.response == null) {
-        message =
-            'Chưa xác nhận được kết quả ghi công. Đang tải lại trạng thái; không tự gửi lại thao tác.';
+        message = postStarted
+            ? 'Chưa xác nhận được kết quả ghi công. Đang tải lại trạng thái; không tự gửi lại thao tác.'
+            : 'Không đọc được chính sách GPS. Chưa gửi yêu cầu chấm công; hãy kiểm tra kết nối.';
       }
       setState(() => actionError = message);
     } finally {
@@ -186,6 +240,28 @@ class _AttendancePageState extends State<AttendancePage> {
                               icon: const Icon(Icons.logout),
                               label: const Text('Check-out')),
                         ]),
+                        if (biometricCapability?.available == true)
+                          Wrap(spacing: 8, children: [
+                            OutlinedButton.icon(
+                                key: const Key('biometric-check-in'),
+                                onPressed: ready && active?.isOpen != true
+                                    ? () => submit(true, biometric: true)
+                                    : null,
+                                icon: const Icon(Icons.fingerprint),
+                                label: const Text('Check-in sinh trắc học')),
+                            OutlinedButton.icon(
+                                key: const Key('biometric-check-out'),
+                                onPressed: ready && active?.isOpen == true
+                                    ? () => submit(false, biometric: true)
+                                    : null,
+                                icon: const Icon(Icons.fingerprint),
+                                label: const Text('Check-out sinh trắc học')),
+                          ]),
+                        Text(biometricCapability?.message ??
+                            'Đang kiểm tra sinh trắc học...'),
+                        TextButton(
+                            onPressed: busy ? null : checkBiometrics,
+                            child: const Text('Kiểm tra lại sinh trắc học')),
                         if (busy)
                           const Padding(
                               padding: EdgeInsets.only(top: 8),
@@ -289,6 +365,8 @@ class _AttendancePageState extends State<AttendancePage> {
                                       Text(
                                           'Thời gian Backend: ${time(lastWasCheckIn ? result.checkInUtc : result.checkOutUtc)}',
                                           key: const Key('result-time')),
+                                      Text(
+                                          'Phương thức ca: ${result.method == 'biometric' ? 'Sinh trắc học hệ thống (thiết bị báo)' : result.method}'),
                                       _LocationDetails(
                                           location: lastWasCheckIn
                                               ? result.checkInLocation
@@ -317,12 +395,21 @@ class _LocationDetails extends StatelessWidget {
                   ? Theme.of(context).colorScheme.error
                   : null,
               fontWeight: FontWeight.w600)),
+      Text(
+          'Lý do: ${value?.reasonLabel ?? 'Bản ghi cũ hoặc chưa có kết quả xác minh.'}'),
+      if (value?.method != null)
+        Text(
+            'Phương thức: ${value!.method == 'biometric' ? 'Sinh trắc học hệ thống' : 'Chấm công thông thường'}'),
       Text(value?.hasCoordinates == true
           ? 'GPS: ${value!.latitude!.toStringAsFixed(6)}, ${value.longitude!.toStringAsFixed(6)}'
           : 'GPS: Chưa có tọa độ từ Backend'),
       if (value?.displayedDistance != null)
         Text(
             'Khoảng cách đến công ty: ${value!.displayedDistance!.toStringAsFixed(1)} m'),
+      if (value?.radiusMeters != null)
+        Text('Bán kính cho phép: ${value!.radiusMeters!.toStringAsFixed(1)} m'),
+      if (value?.accuracy != null)
+        Text('Sai số GPS: ${value!.accuracy!.toStringAsFixed(1)} m'),
     ]);
   }
 }

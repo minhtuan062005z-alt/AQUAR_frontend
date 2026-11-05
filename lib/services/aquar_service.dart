@@ -104,20 +104,31 @@ class AquarService {
 
   Future<Attendance> checkIn({GpsCoordinates? location}) =>
       _checkAttendance('check-in', location);
+  Future<AttendanceLocationPolicy> attendanceLocationPolicy() async =>
+      AttendanceLocationPolicy.fromJson(Map<String, dynamic>.from(
+          (await api.dio.get('/api/attendance/location-policy')).data as Map));
   Future<Attendance> checkOut({GpsCoordinates? location}) =>
       _checkAttendance('check-out', location);
-  Future<Attendance> _checkAttendance(
-      String action, GpsCoordinates? location) async {
+  Future<Attendance> _checkAttendance(String action, GpsCoordinates? location,
+      {String method = 'manual'}) async {
     // Ordinary self-service attendance uses JWT, without biometric verification.
     final response = await api.dio.post('/api/attendance/$action', data: {
-      'method': 'manual',
+      'method': method,
       if (location != null && location.isValid) ...{
         'latitude': location.latitude,
         'longitude': location.longitude,
+        if (location.accuracy != null) 'accuracy': location.accuracy,
+        if (location.capturedAtUtc != null)
+          'capturedAtUtc': location.capturedAtUtc!.toUtc().toIso8601String(),
       },
     });
     return Attendance.fromJson(Map<String, dynamic>.from(response.data as Map));
   }
+
+  Future<Attendance> biometricCheckIn({GpsCoordinates? location}) =>
+      _checkAttendance('check-in', location, method: 'biometric');
+  Future<Attendance> biometricCheckOut({GpsCoordinates? location}) =>
+      _checkAttendance('check-out', location, method: 'biometric');
 
   Map<String, dynamic>? ifId(int? id) => id == null ? null : {'staffId': id};
   Future<Map<String, dynamic>> report(

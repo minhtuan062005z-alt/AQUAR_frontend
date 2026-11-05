@@ -9,6 +9,8 @@ import 'change_password_page.dart';
 import 'attendance_page.dart';
 import 'staff_page.dart';
 import 'report_page.dart';
+import 'payroll_page.dart';
+import 'location_administration_page.dart';
 
 class HomePage extends StatefulWidget {
   final AquarUser user;
@@ -29,8 +31,10 @@ class _HomePageState extends State<HomePage> {
       AttendancePage(user: widget.user, service: service),
       ReportPage(user: widget.user, service: service),
       if (elevated) StaffPage(user: widget.user, service: service),
+      PayrollPage(user: widget.user, service: service),
     ];
     final items = <NavigationDestination>[
+      // Same ordering as pages, including the conditional staff tab.
       const NavigationDestination(
         icon: Icon(Icons.access_time),
         label: 'Chấm công',
@@ -45,10 +49,21 @@ class _HomePageState extends State<HomePage> {
           label: 'Nhân viên',
         ),
     ];
+    items.add(const NavigationDestination(
+        icon: Icon(Icons.payments_outlined), label: 'Bảng lương'));
     return Scaffold(
       appBar: AppBar(
         title: Text('AQUAR • ${widget.user.name}'),
         actions: [
+          if (elevated)
+            IconButton(
+                tooltip: 'Vị trí công ty và cảnh báo GPS',
+                icon: const Icon(Icons.location_on_outlined),
+                onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => LocationAdministrationPage(
+                            user: widget.user, service: service)))),
           IconButton(
             tooltip: 'Cài đặt tài khoản',
             icon: const Icon(Icons.manage_accounts),
